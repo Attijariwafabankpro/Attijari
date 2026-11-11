@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   ArrowLeft,
   Search,
@@ -35,7 +35,10 @@ import {
   Phone,
   Settings,
   Coins,
-  Sprout
+  Sprout,
+  Fingerprint,
+  MapPin,
+  Download
 } from 'lucide-react';
 
 // Types
@@ -88,15 +91,24 @@ interface OperationAccueil {
 
 export default function App() {
   // App navigation state
-  const [isLoggedIn, setIsLoggedIn] = useState(true);
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [isAuthenticating, setIsAuthenticating] = useState(false);
+  const [loginError, setLoginError] = useState('');
   const [activeTab, setActiveTab] = useState<'dashboard' | 'comptes' | 'transactions-pro' | 'cartes' | 'virements' | 'services' | 'menu' | 'detail-operation'>('dashboard');
   const [previousTab, setPreviousTab] = useState<'dashboard' | 'transactions-pro'>('dashboard');
-  const [virementView, setVirementView] = useState<'etape1' | 'etape2' | 'etape3' | 'etape4' | 'secure' | 'succes' | 'beneficiaires' | 'ajouter-beneficiaire' | 'mes-virements' | 'detail-virement'>('etape1');
+  const [virementView, setVirementView] = useState<'etape1' | 'etape2' | 'etape3' | 'etape4' | 'secure' | 'succes' | 'beneficiaires' | 'ajouter-beneficiaire' | 'mes-virements' | 'detail-virement' | 'otp'>('etape1');
   const [mesVirementsSubTab, setMesVirementsSubTab] = useState<'traites' | 'planif' | 'perm'>('traites');
   const [cartesSubTab, setCartesSubTab] = useState<'physiques' | 'virtuelles'>('physiques');
   const [selectedOperation, setSelectedOperation] = useState<OperationAccueil | null>(null);
+
+  // OTP state (SMS Confirmation)
+  const [otpCode, setOtpCode] = useState('');
+  const [otpError, setOtpError] = useState('');
+  const [otpFlow, setOtpFlow] = useState<'virement' | 'beneficiaire' | null>(null);
+  const [otpReturnView, setOtpReturnView] = useState<'etape4' | 'ajouter-beneficiaire' | 'beneficiaires' | 'etape1'>('etape1');
+  const [pendingBeneficiaire, setPendingBeneficiaire] = useState<Beneficiaire | null>(null);
   
   // Modals & UI states
   const [loading, setLoading] = useState(false);
@@ -120,6 +132,8 @@ export default function App() {
   const [promoModal, setPromoModal] = useState<{ title: string; subtitle: string; content: string } | null>(null);
   const [searchBeneficiaireQuery, setSearchBeneficiaireQuery] = useState('');
   const [showSearchBeneficiaire, setShowSearchBeneficiaire] = useState(false);
+  const [deferredInstallPrompt, setDeferredInstallPrompt] = useState<any>(null);
+  const [showInstallModal, setShowInstallModal] = useState(false);
   
   // Menu tab states
   const [menuSearchQuery, setMenuSearchQuery] = useState('');
@@ -138,7 +152,7 @@ export default function App() {
     id: 'compte-cheque',
     title: 'Compte chèque',
     rib: '000713N300400592',
-    solde: '1, 30 DH',
+    solde: '3 252,54 MAD',
   });
 
   const [selectedBeneficiaire, setSelectedBeneficiaire] = useState<Beneficiaire | null>(null);
@@ -724,11 +738,78 @@ export default function App() {
     }, 500);
   };
 
+  // Login handler: password Simo123@ or biometric fingerprint, with 5 seconds loading overlay
+  const handlePerformLogin = (isBiometric = false) => {
+    // Remplir automatiquement le mot de passe Simo123@ si vide
+    if (!password) {
+      setPassword('Simo123@');
+    }
+    setLoginError('');
+    setIsAuthenticating(true);
+
+    // Minuterie de 5 secondes exactement comme demandé, puis entrée dans l'appli
+    setTimeout(() => {
+      setIsAuthenticating(false);
+      setIsLoggedIn(true);
+      setActiveTab('dashboard');
+    }, 5000);
+  };
+
+  // Ecoute de l'événement PWA avant installation sur Android
+  useEffect(() => {
+    const handleBeforeInstall = (e: any) => {
+      e.preventDefault();
+      setDeferredInstallPrompt(e);
+    };
+    window.addEventListener('beforeinstallprompt', handleBeforeInstall);
+    return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstall);
+  }, []);
+
+  const handleTriggerInstall = () => {
+    if (deferredInstallPrompt) {
+      deferredInstallPrompt.prompt();
+      deferredInstallPrompt.userChoice.then(() => {
+        setDeferredInstallPrompt(null);
+      });
+    } else {
+      setShowInstallModal(true);
+    }
+  };
+
   // Switch virement subviews with loading
   const handleVirementViewSwitch = (view: typeof virementView) => {
     executeWithLoading(() => {
       setVirementView(view);
     }, 500);
+  };
+
+  // Validation OTP SMS avec vérification (si n'importe quel code, affiche que le code est erroné)
+  const handleValidateOtp = () => {
+    if (!otpCode.trim()) {
+      setOtpError('Veuillez saisir le code reçu par SMS.');
+      return;
+    }
+    // Si le code est 2546 (les 4 chiffres affichés du numéro de téléphone *******2546) : valide avec succès
+    if (otpCode.trim() === '2546') {
+      setOtpError('');
+      executeWithLoading(() => {
+        if (otpFlow === 'beneficiaire' && pendingBeneficiaire) {
+          setBeneficiairesList((prev) => [pendingBeneficiaire, ...prev]);
+          setSelectedBeneficiaire(pendingBeneficiaire);
+          setNouveauNom('');
+          setNouveauPrenom('');
+          setNouveauRib('');
+          setPendingBeneficiaire(null);
+          setVirementView('beneficiaires');
+        } else {
+          setVirementView('succes');
+        }
+        setOtpCode('');
+      }, 1000);
+    } else {
+      // Si n'importe quel autre code est entré : affiche code erroné
+      setOtpError('Code erroné, veuillez réessayer.');
+    }
   };
 
   // Open detail for a virement in Traités
@@ -857,102 +938,219 @@ export default function App() {
         </div>
       )}
 
-      {/* PAGE DE CONNEXION INITIALE */}
+      {/* PAGE DE CONNEXION INITIALE (Reproduction exacte de la capture Attijari Mobile) */}
       {!isLoggedIn && (
         <div
-          className="fixed inset-0 z-50 bg-[#f3f4f6] flex flex-col justify-between items-center overflow-y-auto px-4 py-6"
+          className="fixed inset-0 z-50 bg-[#fafafa] flex flex-col justify-between items-center overflow-y-auto"
           style={{
-            backgroundImage: 'repeating-linear-gradient(45deg, #e5e7eb 0, #e5e7eb 1px, transparent 0, transparent 50px)',
+            backgroundImage: `url("data:image/svg+xml,%3Csvg width='80' height='40' viewBox='0 0 80 40' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M0 20 L20 10 L40 20 L60 30 L80 20' fill='none' stroke='%2394a3b8' stroke-width='1.2' opacity='0.35' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M0 0 L20 -10 L40 0 L60 10 L80 0' fill='none' stroke='%2394a3b8' stroke-width='1.2' opacity='0.35' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M0 40 L20 30 L40 40 L60 50 L80 40' fill='none' stroke='%2394a3b8' stroke-width='1.2' opacity='0.35' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`,
+            backgroundRepeat: 'repeat',
           }}
         >
-          <div className="w-full max-w-[420px] my-auto bg-white rounded-3xl shadow-xl border border-gray-200/80 p-6 flex flex-col items-center relative">
-            {/* Logo Attijari pro officiel */}
-            <div className="flex items-center space-x-3 mb-6 bg-white px-3 py-2 rounded-xl shadow-sm border border-gray-100">
-              <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-[#7A1000] to-[#F08B00] flex items-center justify-center text-white font-black text-xs shadow-inner">
-                AWB
-              </div>
-              <div className="flex flex-col">
-                <span className="text-[11px] font-extrabold text-[#7A1000] tracking-tight leading-none mb-0.5" style={{ fontFamily: 'serif' }}>
-                  التجاري وفا بنك
-                </span>
-                <span className="text-xs font-black text-gray-900 tracking-tight leading-none">Attijari pro</span>
-              </div>
-            </div>
-
-            {/* Avatar & Bienvenue */}
-            <div className="w-16 h-16 rounded-full bg-[#0096e6] text-white flex items-center justify-center font-bold text-xl shadow-md mb-3">
-              AS
-            </div>
-            <h2 className="text-xl font-extrabold text-gray-900 mb-6">Bienvenue Saber</h2>
-
-            {/* Champ Mot de passe */}
-            <div className="w-full relative mb-4">
-              {password.length > 0 && (
-                <label className="absolute left-4 top-2 text-[11px] font-medium text-[#eb5545] transition-all z-10">
-                  Mot de passe
-                </label>
-              )}
-              <input
-                type={showPassword ? 'text' : 'password'}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder={password.length === 0 ? 'Mot de passe' : ''}
-                className={`w-full bg-white border border-gray-200 rounded-2xl px-4 text-[15px] text-gray-800 outline-none transition shadow-sm pr-12 relative z-0 ${
-                  password.length > 0 ? 'pt-5 pb-2 border-[#eb5545] text-xl tracking-widest' : 'py-3.5'
-                }`}
+          {/* Contenu principal centré */}
+          <div className="w-full max-w-[390px] px-4 pt-8 pb-4 flex flex-col items-center my-auto">
+            {/* Logo officiel Attijariwafa bank exact de la capture */}
+            <div className="flex items-center justify-center mb-6">
+              <img
+                src="/assets/aistudio/Screenshot_20261111_191003_Attijari_Mobile_9a256bc6.jpg"
+                alt="Attijariwafa bank"
+                className="h-16 sm:h-18 w-auto max-w-[230px] object-contain rounded-lg"
               />
+            </div>
+
+            {/* Carte Blanche de Connexion */}
+            <div className="w-full bg-white rounded-[32px] shadow-[0_10px_35px_rgba(0,0,0,0.06)] border border-gray-100/80 p-7 sm:p-8 flex flex-col items-center relative">
+              {/* Bouton Changer d'utilisateur (en haut à droite) */}
+              <button
+                onClick={() => {
+                  alert('Changement de compte utilisateur');
+                }}
+                className="absolute top-5 right-5 text-[#eb5545] p-1.5 hover:opacity-80 transition"
+                title="Changer d'utilisateur"
+              >
+                {/* Icône deux personnes avec flèches circulaires */}
+                <svg className="w-6 h-6 text-[#eb5545]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="9" cy="8" r="3" />
+                  <path d="M4 17a5 5 0 0 1 10 0" />
+                  <circle cx="16" cy="6" r="2.2" />
+                  <path d="M15 13a4 4 0 0 1 5 3" />
+                  <path d="M2 10a9 9 0 0 1 4-5" />
+                  <path d="M22 14a9 9 0 0 1-4 5" />
+                </svg>
+              </button>
+
+              {/* Avatar AS Bleu */}
+              <div className="w-20 h-20 rounded-full bg-[#00a2e8] text-white flex items-center justify-center font-black text-2xl shadow-sm mb-3">
+                AS
+              </div>
+
+              {/* Titre Bienvenue Saber */}
+              <h2 className="text-2xl font-black text-[#1e293b] mb-6 tracking-tight">
+                Bienvenue Saber
+              </h2>
+
+              {/* Champ Mot de passe */}
+              <div className="w-full relative mb-2">
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  value={password}
+                  onChange={(e) => {
+                    setPassword(e.target.value);
+                    if (loginError) setLoginError('');
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      handlePerformLogin(false);
+                    }
+                  }}
+                  placeholder="Mot de passe"
+                  className={`w-full bg-white border ${loginError ? 'border-red-500 ring-1 ring-red-500' : 'border-gray-200/90'} rounded-2xl py-4 px-4 text-base text-gray-800 placeholder-gray-400 focus:outline-none focus:border-[#eb5545] focus:ring-1 focus:ring-[#eb5545] transition pr-12 shadow-2xs`}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-4 top-1/2 -translate-y-1/2 text-[#eb5545] hover:opacity-80 p-1"
+                >
+                  {showPassword ? <EyeOff className="w-5 h-5 stroke-[2.2]" /> : <Eye className="w-5 h-5 stroke-[2.2]" />}
+                </button>
+              </div>
+
+              {/* Message d'erreur mot de passe */}
+              {loginError && (
+                <div className="w-full text-left mb-3 px-1">
+                  <p className="text-xs font-bold text-red-500">{loginError}</p>
+                </div>
+              )}
+              {!loginError && <div className="mb-3"></div>}
+
+              {/* Bouton Connexion */}
               <button
                 type="button"
-                onClick={() => setShowPassword(!showPassword)}
-                className="absolute right-4 top-1/2 -translate-y-1/2 text-[#eb5545] hover:opacity-80 z-10"
+                onClick={() => handlePerformLogin(false)}
+                disabled={isAuthenticating}
+                className="w-full bg-[#eb5545] text-white font-black py-4 rounded-2xl text-[16px] shadow-md hover:bg-red-600 active:scale-[0.99] transition mb-6 cursor-pointer"
               >
-                {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                {isAuthenticating ? 'Connexion en cours...' : 'Connexion'}
+              </button>
+
+              {/* Séparateur Ou */}
+              <div className="w-full flex items-center mb-6">
+                <div className="flex-1 border-t border-gray-200"></div>
+                <span className="px-4 text-sm font-black text-gray-400">Ou</span>
+                <div className="flex-1 border-t border-gray-200"></div>
+              </div>
+
+              {/* Bouton Empreinte digitale Touch ID / Face ID */}
+              <button
+                type="button"
+                onClick={() => handlePerformLogin(true)}
+                disabled={isAuthenticating}
+                className="w-14 h-14 rounded-full bg-[#eb5545] text-white flex items-center justify-center shadow-lg shadow-red-500/25 hover:bg-red-600 transition active:scale-95 mb-6 cursor-pointer"
+                title="Connexion par empreinte biométrique (Simo123@)"
+              >
+                <Fingerprint className="w-7 h-7 stroke-[2.2]" />
+              </button>
+
+              {/* Mot de passe oublié */}
+              <button
+                onClick={() => {
+                  alert('Pour réinitialiser votre mot de passe, veuillez contacter votre agence ou le centre d’assistance au 0522 58 88 58.');
+                }}
+                className="text-[#eb5545] text-[15px] font-black hover:underline cursor-pointer"
+              >
+                Identifiant ou mot de passe oublié
               </button>
             </div>
 
-            {/* Bouton Connexion */}
-            <button
-              onClick={() => {
-                executeWithLoading(() => setIsLoggedIn(true), 1200);
-              }}
-              className={`w-full font-extrabold py-3.5 rounded-2xl text-[15px] shadow-sm transition mb-6 cursor-pointer ${
-                password.length > 0
-                  ? 'bg-[#eb5545] text-white hover:bg-red-600 shadow-md'
-                  : 'bg-[#e5e7eb] text-gray-400'
-              }`}
-            >
-              Connexion
-            </button>
+            {/* Boutons Devenir Client et Télécharger l'APK */}
+            <div className="my-5 flex flex-col items-center space-y-2.5">
+              <button
+                onClick={() =>
+                  setPromoModal({
+                    title: 'Devenir client Attijariwafa bank',
+                    subtitle: 'Ouverture de compte rapide',
+                    content: 'Ouvrez votre compte bancaire en ligne en quelques minutes avec votre smartphone et une pièce d’identité en cours de validité.',
+                  })
+                }
+                className="bg-white border-2 border-[#eb5545] text-[#eb5545] font-black py-3 px-10 rounded-full text-[15px] shadow-sm hover:bg-red-50 transition active:scale-95 cursor-pointer"
+              >
+                Devenir client
+              </button>
 
-            {/* Séparateur */}
-            <div className="w-full flex items-center my-2 mb-6">
-              <div className="flex-1 border-t border-gray-200"></div>
-              <span className="px-4 text-xs font-bold text-gray-400 uppercase tracking-wider">Ou</span>
-              <div className="flex-1 border-t border-gray-200"></div>
+              <button
+                type="button"
+                onClick={handleTriggerInstall}
+                className="flex items-center space-x-1.5 text-xs font-bold text-gray-500 hover:text-[#eb5545] py-1 transition cursor-pointer"
+              >
+                <Download className="w-4 h-4 stroke-[2.2] text-[#eb5545]" />
+                <span>Télécharger l'APK / Installer</span>
+              </button>
             </div>
+          </div>
 
-            {/* Bouton Empreinte digitale */}
+          {/* Barre inférieure à 3 onglets sur la page de connexion */}
+          <div className="w-full bg-white border-t border-gray-100 py-2.5 px-6 flex justify-around items-center rounded-t-[28px] shadow-[0_-4px_20px_rgba(0,0,0,0.04)] mt-auto max-w-md mx-auto">
+            {/* 1. Accueil (actif rouge) */}
+            <button className="flex flex-col items-center text-[#eb5545] focus:outline-none">
+              <Home className="w-6 h-6 fill-current" />
+              <span className="text-[11px] font-black mt-1 text-[#eb5545]">Accueil</span>
+            </button>
+
+            {/* 2. Agences */}
             <button
-              onClick={() => {
-                executeWithLoading(() => setIsLoggedIn(true), 1000);
-              }}
-              className="w-14 h-14 rounded-full bg-[#eb5545] text-white flex items-center justify-center shadow-lg hover:bg-red-600 transition mb-6"
-              title="Connexion biométrique"
+              onClick={() =>
+                setPromoModal({
+                  title: 'Trouver une agence ou GAB',
+                  subtitle: 'Réseau Attijariwafa bank',
+                  content: 'Localisez les agences Attijariwafa bank et les distributeurs automatiques les plus proches de vous avec horaires d’ouverture.',
+                })
+              }
+              className="flex flex-col items-center text-[#64748b] hover:text-gray-900 focus:outline-none"
             >
-              <Smartphone className="w-7 h-7" />
+              <MapPin className="w-6 h-6" />
+              <span className="text-[11px] font-semibold mt-1">Agences</span>
             </button>
 
-            {/* Mot de passe oublié */}
-            <button className="text-[#eb5545] text-xs font-bold hover:underline">
-              Identifiant ou mot de passe oublié
+            {/* 3. Menu */}
+            <button
+              onClick={() =>
+                setPromoModal({
+                  title: 'Services d’urgence & Contacts',
+                  subtitle: 'Attijari Mobile',
+                  content: 'Opposition sur carte 24h/24, assistance voyage, contact direct de votre conseiller et FAQ.',
+                })
+              }
+              className="flex flex-col items-center text-[#64748b] hover:text-gray-900 focus:outline-none"
+            >
+              <svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3.5" y="3.5" width="6.5" height="6.5" rx="2" />
+                <rect x="14" y="3.5" width="6.5" height="6.5" rx="2" />
+                <rect x="3.5" y="14" width="6.5" height="6.5" rx="2" />
+                <rect x="14" y="14" width="6.5" height="6.5" rx="2" />
+              </svg>
+              <span className="text-[11px] font-semibold mt-1">Menu</span>
             </button>
           </div>
 
-          <div className="w-full max-w-[420px] mt-4">
-            <button className="w-full bg-white border border-[#eb5545] text-[#eb5545] font-bold py-3.5 rounded-full text-sm shadow-sm hover:bg-red-50 transition">
-              Devenir client
-            </button>
-          </div>
+          {/* Pop-up Chargement ... 5 secondes exactement comme la capture Screenshot_20261111_190403 */}
+          {isAuthenticating && (
+            <div
+              onClick={() => {
+                setIsAuthenticating(false);
+                setIsLoggedIn(true);
+                setActiveTab('dashboard');
+              }}
+              className="fixed inset-0 z-[100] bg-black/10 backdrop-blur-[1px] flex items-center justify-center p-4 cursor-pointer"
+              title="Cliquez pour entrer immédiatement"
+            >
+              <div className="bg-white/90 backdrop-blur-md rounded-3xl py-7 px-10 shadow-2xl flex flex-col items-center justify-center border border-white/80 min-w-[210px] animate-in fade-in zoom-in-95 duration-200">
+                {/* Anneau de chargement rouge/saumon officiel Attijari */}
+                <div className="w-12 h-12 rounded-full border-[3.5px] border-red-100 border-t-[#eb5545] animate-spin mb-3.5"></div>
+                <p className="text-[15px] font-bold text-gray-500 tracking-wide">Chargement ...</p>
+                <span className="text-[10px] text-gray-400 mt-1 font-medium">Connexion automatique en cours</span>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -1191,9 +1389,9 @@ export default function App() {
                       '••••••'
                     ) : (
                       <>
-                        0,
+                        3 252,
                         <span className="text-xs text-gray-600 font-bold ml-0.5 -translate-y-2 inline-block">
-                          22 MAD
+                          54 MAD
                         </span>
                       </>
                     )}
@@ -1800,9 +1998,9 @@ export default function App() {
                     '••••••'
                   ) : (
                     <>
-                      0,
+                      3 252,
                       <span className="text-sm text-gray-600 font-bold ml-0.5 -translate-y-2 inline-block">
-                        22 MAD
+                        54 MAD
                       </span>
                     </>
                   )}
@@ -2906,7 +3104,13 @@ export default function App() {
 
                   <div className="p-4 bg-white border-t border-gray-100">
                     <button
-                      onClick={() => handleVirementViewSwitch('secure')}
+                      onClick={() => {
+                        setOtpFlow('virement');
+                        setOtpReturnView('etape4');
+                        setOtpCode('');
+                        setOtpError('');
+                        handleVirementViewSwitch('otp');
+                      }}
                       className="w-full bg-[#eb5545] text-white font-extrabold py-3.5 rounded-2xl text-[15px] shadow-md hover:bg-red-600 transition cursor-pointer"
                     >
                       Valider
@@ -3276,14 +3480,123 @@ export default function App() {
                           dateAjout: "Aujourd'hui",
                           hasFeather: true,
                         };
-                        setBeneficiairesList([newB, ...beneficiairesList]);
-                        setSelectedBeneficiaire(newB);
-                        handleVirementViewSwitch('etape1');
+                        setPendingBeneficiaire(newB);
+                        setOtpFlow('beneficiaire');
+                        setOtpReturnView('ajouter-beneficiaire');
+                        setOtpCode('');
+                        setOtpError('');
+                        handleVirementViewSwitch('otp');
                       }}
-                      className="w-full bg-[#eb5545] text-white font-extrabold py-3.5 rounded-2xl text-[15px] shadow hover:bg-red-600 transition"
+                      className="w-full bg-[#eb5545] text-white font-extrabold py-3.5 rounded-2xl text-[15px] shadow hover:bg-red-600 transition cursor-pointer"
                     >
                       Valider
                     </button>
+                  </div>
+                </div>
+              )}
+
+              {/* ================= VIEW: OTP (Code de confirmation par SMS) ================= */}
+              {virementView === 'otp' && (
+                <div className="h-full flex flex-col bg-white">
+                  {/* Header avec flèche rouge et titre OTP centré */}
+                  <div className="px-5 py-4 flex items-center justify-between border-b border-gray-100 bg-white">
+                    <button
+                      onClick={() => handleVirementViewSwitch(otpReturnView || 'etape1')}
+                      className="text-[#eb5545] p-1 -ml-1 hover:opacity-80 transition cursor-pointer"
+                    >
+                      <ArrowLeft className="w-6 h-6 stroke-[2.5]" />
+                    </button>
+                    <h2 className="text-xl font-black text-gray-900 tracking-tight">OTP</h2>
+                    <div className="w-6"></div>
+                  </div>
+
+                  {/* Corps du formulaire OTP */}
+                  <div className="flex-1 overflow-y-auto px-6 pt-10 pb-6 flex flex-col items-center">
+                    {/* Illustration Téléphone + Bulle de message SMS exactement comme la photo */}
+                    <div className="w-24 h-24 flex items-center justify-center mb-6 relative">
+                      <svg className="w-20 h-20" viewBox="0 0 80 80" fill="none">
+                        {/* Smartphone contour orange/rouge */}
+                        <rect x="22" y="16" width="34" height="52" rx="6" stroke="#eb5545" strokeWidth="3" fill="none" />
+                        {/* Ligne écouteur en haut */}
+                        <line x1="33" y1="22" x2="45" y2="22" stroke="#eb5545" strokeWidth="2.5" strokeLinecap="round" />
+                        {/* Barre inférieure */}
+                        <line x1="30" y1="62" x2="48" y2="62" stroke="#eb5545" strokeWidth="2.5" strokeLinecap="round" />
+                        {/* Bulle SMS orange/jaune en haut à droite avec pointe vers le téléphone */}
+                        <path
+                          d="M44 14 C44 9 48 5 53 5 H65 C70 5 74 9 74 14 V25 C74 30 70 34 65 34 H55 L47 41 V34 H53 C48 34 44 30 44 25 Z"
+                          stroke="#f59e0b"
+                          strokeWidth="3"
+                          fill="white"
+                          strokeLinejoin="round"
+                          strokeLinecap="round"
+                        />
+                        {/* 3 points rouges dans la bulle de message */}
+                        <circle cx="53" cy="19" r="2.2" fill="#eb5545" />
+                        <circle cx="59" cy="19" r="2.2" fill="#eb5545" />
+                        <circle cx="65" cy="19" r="2.2" fill="#eb5545" />
+                      </svg>
+                    </div>
+
+                    {/* Titre Code de confirmation */}
+                    <h3 className="text-2xl font-black text-[#1e293b] mb-3 text-center tracking-tight">
+                      Code de confirmation
+                    </h3>
+
+                    {/* Sous-titre numéro masqué */}
+                    <p className="text-[15px] text-gray-500 font-medium text-center max-w-[280px] leading-relaxed mb-8">
+                      Un code de vérification a été envoyé au numéro *******2546.
+                    </p>
+
+                    {/* Champ Code encadré de rouge */}
+                    <div className="w-full max-w-sm mb-2">
+                      <div
+                        className={`border-2 ${
+                          otpError ? 'border-red-500' : 'border-[#eb5545]'
+                        } rounded-2xl px-4 pt-2.5 pb-2.5 bg-white relative transition shadow-2xs`}
+                      >
+                        <label className="block text-xs font-bold text-[#eb5545] leading-none mb-1">
+                          Code
+                        </label>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={otpCode}
+                          onChange={(e) => {
+                            setOtpCode(e.target.value);
+                            if (otpError) setOtpError('');
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') handleValidateOtp();
+                          }}
+                          placeholder=""
+                          className="w-full text-base font-bold text-gray-900 outline-none bg-transparent"
+                          autoFocus
+                        />
+                      </div>
+
+                      {/* Message d'erreur si code erroné */}
+                      {otpError && (
+                        <div className="text-left mt-2 px-1 animate-in fade-in duration-150">
+                          <p className="text-xs font-bold text-red-500">{otpError}</p>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Bouton Valider */}
+                    <div className="w-full max-w-sm mt-8">
+                      <button
+                        type="button"
+                        onClick={handleValidateOtp}
+                        disabled={!otpCode.trim()}
+                        className={`w-full py-4 rounded-2xl font-black text-[16px] transition ${
+                          otpCode.trim().length > 0
+                            ? 'bg-[#eb5545] text-white hover:bg-red-600 shadow-md cursor-pointer active:scale-[0.99]'
+                            : 'bg-[#edf2f7] text-[#94a3b8] cursor-not-allowed'
+                        }`}
+                      >
+                        Valider
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}
@@ -3829,7 +4142,7 @@ export default function App() {
                     id: 'compte-cheque',
                     title: 'Compte chèque',
                     rib: '000713N300400592',
-                    solde: '0,22 MAD',
+                    solde: '3 252,54 MAD',
                   });
                   setIsChoixCompteOpen(false);
                 }}
@@ -3849,7 +4162,7 @@ export default function App() {
                   </div>
                 </div>
                 <span className="text-xs font-bold text-green-600 bg-green-50 px-2.5 py-1 rounded-full">
-                  0,22 MAD
+                  3 252,54 MAD
                 </span>
               </div>
 
@@ -3912,6 +4225,70 @@ export default function App() {
                 Fermer
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Installation APK Android / PWA */}
+      {showInstallModal && (
+        <div className="fixed inset-0 z-[120] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div className="bg-white rounded-3xl max-w-sm w-full p-6 shadow-2xl relative border border-gray-100 flex flex-col items-center text-center">
+            <button
+              onClick={() => setShowInstallModal(false)}
+              className="absolute top-4 right-4 text-gray-400 hover:text-gray-700 p-1 cursor-pointer"
+            >
+              <X className="w-6 h-6" />
+            </button>
+
+            {/* Icone officielle de l'app icon2026.png */}
+            <div className="w-16 h-16 rounded-2xl overflow-hidden shadow-md mb-3 border border-gray-100 p-0.5 bg-white">
+              <img src="icon2026.png" alt="Attijari pro" className="w-full h-full object-cover rounded-xl" />
+            </div>
+
+            <h3 className="text-lg font-black text-gray-900 mb-1">Installer Attijari pro (APK)</h3>
+            <p className="text-xs text-gray-500 mb-5">Application Mobile Espace Auto-Entrepreneur</p>
+
+            <div className="w-full bg-red-50/50 rounded-2xl p-4 text-left border border-red-100 mb-5 space-y-2.5">
+              <div className="flex items-start space-x-2.5">
+                <span className="w-5 h-5 rounded-full bg-[#eb5545] text-white flex items-center justify-center text-xs font-bold shrink-0 mt-0.5">1</span>
+                <p className="text-xs text-gray-700 font-medium leading-relaxed">
+                  <strong>Sur votre navigateur mobile (Samsung Internet / Chrome)</strong> : Ouvrez le menu ⋮ puis appuyez sur <strong>« Installer l'application »</strong> ou <strong>« Ajouter à l'écran d'accueil »</strong>.
+                </p>
+              </div>
+              <div className="flex items-start space-x-2.5">
+                <span className="w-5 h-5 rounded-full bg-[#eb5545] text-white flex items-center justify-center text-xs font-bold shrink-0 mt-0.5">2</span>
+                <p className="text-xs text-gray-700 font-medium leading-relaxed">
+                  L'application s'installera avec l'icône <strong>icon2026.png</strong> comme une vraie application native !
+                </p>
+              </div>
+            </div>
+
+            <button
+              onClick={() => {
+                if (deferredInstallPrompt) {
+                  deferredInstallPrompt.prompt();
+                  deferredInstallPrompt.userChoice.then(() => {
+                    setDeferredInstallPrompt(null);
+                    setShowInstallModal(false);
+                  });
+                } else {
+                  alert("Pour installer l'application sur Android, appuyez sur les 3 points du navigateur puis 'Installer l'application' ou 'Ajouter à l'écran d'accueil'.");
+                }
+              }}
+              className="w-full bg-[#eb5545] text-white font-extrabold py-3.5 rounded-2xl text-sm shadow hover:bg-red-600 transition flex items-center justify-center space-x-2 cursor-pointer mb-2.5"
+            >
+              <Download className="w-4 h-4 stroke-[2.5]" />
+              <span>Installer maintenant</span>
+            </button>
+
+            <a
+              href="attijari-pro-github.zip"
+              download="attijari-pro-github.zip"
+              className="w-full bg-gray-50 hover:bg-gray-100 text-gray-700 font-bold py-3 rounded-2xl text-xs transition flex items-center justify-center space-x-2 border border-gray-200"
+            >
+              <Download className="w-3.5 h-3.5 text-gray-500" />
+              <span>Télécharger le ZIP complet pour GitHub</span>
+            </a>
           </div>
         </div>
       )}
